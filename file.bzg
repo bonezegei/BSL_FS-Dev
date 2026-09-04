@@ -1,0 +1,9 @@
+loadNative("fs.dll","fs");
+
+var fileSystem = fs();
+var file = fileSystem.openFile("fs.dll");
+
+print("File opened successfully: " + file.data());
+print("File opened successfully: " + file.type());
+print("File opened successfully: " + file.size());
+
