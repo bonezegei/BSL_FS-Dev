@@ -1,9 +1,13 @@
-loadNative("fs.dll", "fs");
+//loadNative("fs.dll", "fs");
+loadNative("./fs.so", "fs");
 
 var fileSystem = fs();
 
 var dir = fileSystem.scriptDir();
 print("current path: " + dir);
+
+var dirc = fileSystem.cwd();
+print("cwd path: " + dirc);
 
 var files = fileSystem.list(dir);
 

@@ -1,4 +1,5 @@
-loadNative("fs.dll", "fs");
+//loadNative("fs.dll", "fs");
+loadNative("fs.so", "fs");
 
 var fileSystem = fs();
 

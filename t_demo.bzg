@@ -1,4 +1,5 @@
-loadNative("fs.dll", "fs");
+//loadNative("fs.dll", "fs");
+loadNative("./fs.so", "fs");
 
 var fileSystem = fs();
 
@@ -23,6 +24,6 @@ var copyPath = fileSystem.joinPath(currentDir, "sample_copy.txt");
 fileSystem.copyFile(targetPath, copyPath);
 
 // 4. Clean up created files
-//fileSystem.deleteFile(targetPath);
-//fileSystem.deleteFile(copyPath);
+fileSystem.deleteFile(targetPath);
+fileSystem.deleteFile(copyPath);
 print("Cleaned up temporary files.");

@@ -1,0 +1,38 @@
+//loadNative("fs.dll", "fs");
+loadNative("./fs.so", "fs");
+
+
+var fileSystem = fs();
+
+// --- 1. DISK MANAGER FEATURE ---
+print("--- MOUNTED DRIVES ---");
+var driveList = fileSystem.drives();
+
+for (var i = 0; i < driveList.size; i++) {
+    var d = driveList[i];
+    var totalGB = d.totalBytes / (1024 * 1024 * 1024);
+    var freeGB = d.freeBytes / (1024 * 1024 * 1024);
+
+    print("Drive: " + d.mountPoint + " | Label: " + d.volumeName);
+    print("  Type: " + d.driveType + " (" + d.mediaType + ")");
+    print("  FS: " + d.fsType + " | Free: " + freeGB.toFixed(2) + " GB / " + totalGB.toFixed(2) + " GB");
+    print("---------------------------------------");
+}
+
+// --- 2. DELETED FILE RECOVERY FEATURE ---
+print("\n--- SCANNING UNALLOCATED SECTORS ---");
+
+// Scan first 50 MB of D drive for deleted PNG files
+var found = fileSystem.scanDeleted("D", "png", 50);
+
+if (found != null && found.size > 0) {
+    print("Found " + found.size + " recoverable PNG headers!");
+    
+    // Recover first file (extract 500 KB raw file)
+    var item = found[0];
+    print("Extracting " + item.filename + " from sector " + item.sectorOffset);
+    fileSystem.recoverFile("D", item.sectorOffset, 512000, "C:\\Users\\Public\\restored.png");
+    print("File recovered successfully!");
+} else {
+    print("No file headers found or administrator privileges missing.");
+}

@@ -15,6 +15,7 @@
     #include <time.h>
     #include <unistd.h>
     #include <fcntl.h>
+    #include <mntent.h>
 #endif
 
 #ifdef __cplusplus
@@ -638,7 +639,7 @@ Value bsl_fs_baseName(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup(path));
 }
 
-// --- NEW FEATURE 1: DISK MANAGER / DRIVES INFO ---
+// --- DISK MANAGER / DRIVES INFO ---
 
 Value bsl_fs_drives(int argc, Value* argv, Env** envp) {
     int capacity = 8;
@@ -737,23 +738,21 @@ Value bsl_fs_drives(int argc, Value* argv, Env** envp) {
     return make_arr(res_arr);
 }
 
-// --- NEW FEATURE 2: DELETED FILE SCANNING (FILE CARVING) ---
+// --- DELETED FILE SCANNING (FILE CARVING) ---
 
 Value bsl_fs_scanDeleted(int argc, Value* argv, Env** envp) {
     if (argc < 3 || argv[1].type != VAL_STR || argv[2].type != VAL_STR) {
         return make_null();
     }
 
-    const char* drive_letter = argv[1].str; // e.g. "C" or "D"
-    const char* file_extension = argv[2].str; // e.g. "png", "jpg", "pdf"
+    const char* drive_letter = argv[1].str; // "C" on Windows or "/dev/sda1" on Linux
+    const char* file_extension = argv[2].str;
 
-    // Default max MB to scan if omitted
     double scan_limit_mb = 100.0;
     if (argc >= 4 && argv[3].type == VAL_NUM) {
         scan_limit_mb = argv[3].num;
     }
 
-    // Determine Magic Bytes
     unsigned char sig[8] = {0};
     size_t sig_len = 0;
 
@@ -764,10 +763,10 @@ Value bsl_fs_scanDeleted(int argc, Value* argv, Env** envp) {
         sig[0] = 0xFF; sig[1] = 0xD8; sig[2] = 0xFF;
         sig_len = 3;
     } else if (strcmp(file_extension, "pdf") == 0) {
-        sig[0] = 0x25; sig[1] = 0x50; sig[2] = 0x44; sig[3] = 0x46; // %PDF
+        sig[0] = 0x25; sig[1] = 0x50; sig[2] = 0x44; sig[3] = 0x46;
         sig_len = 4;
     } else {
-        return make_null(); // Unsupported file signature type
+        return make_null();
     }
 
     int capacity = 16;
@@ -781,7 +780,7 @@ Value bsl_fs_scanDeleted(int argc, Value* argv, Env** envp) {
     HANDLE hDrive = CreateFileA(raw_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     if (hDrive == INVALID_HANDLE_VALUE) {
         free(elements);
-        return make_null(); // Requires Administrator Rights!
+        return make_null();
     }
 
     DWORD sector_size = 512;
@@ -795,7 +794,6 @@ Value bsl_fs_scanDeleted(int argc, Value* argv, Env** envp) {
             break;
         }
 
-        // Compare Magic Bytes signature at sector header
         if (memcmp(buffer, sig, sig_len) == 0) {
             Value item = make_obj();
             unsigned long long byte_offset = sector * sector_size;
@@ -818,6 +816,50 @@ Value bsl_fs_scanDeleted(int argc, Value* argv, Env** envp) {
 
     free(buffer);
     CloseHandle(hDrive);
+#else
+    char dev_path[256];
+    if (strncmp(drive_letter, "/dev/", 5) == 0) {
+        snprintf(dev_path, sizeof(dev_path), "%s", drive_letter);
+    } else {
+        snprintf(dev_path, sizeof(dev_path), "/dev/%s", drive_letter);
+    }
+
+    int fd = open(dev_path, O_RDONLY);
+    if (fd < 0) {
+        free(elements);
+        return make_null();
+    }
+
+    size_t sector_size = 512;
+    unsigned char* buffer = (unsigned char*)malloc(sector_size);
+    unsigned long long max_sectors = (unsigned long long)((scan_limit_mb * 1024.0 * 1024.0) / sector_size);
+
+    for (unsigned long long sector = 0; sector < max_sectors; sector++) {
+        ssize_t bytesRead = read(fd, buffer, sector_size);
+        if (bytesRead <= 0) break;
+
+        if (memcmp(buffer, sig, sig_len) == 0) {
+            Value item = make_obj();
+            unsigned long long byte_offset = sector * sector_size;
+
+            char name_buf[128];
+            snprintf(name_buf, sizeof(name_buf), "Restored_0x%llX.%s", byte_offset, file_extension);
+
+            add_property(&item, "filename", make_str(bsl_strdup(name_buf)));
+            add_property(&item, "sectorOffset", make_num((double)sector));
+            add_property(&item, "byteOffset", make_num((double)byte_offset));
+            add_property(&item, "ext", make_str(bsl_strdup(file_extension)));
+
+            if (count >= capacity) {
+                capacity *= 2;
+                elements = (Value*)realloc(elements, sizeof(Value) * capacity);
+            }
+            elements[count++] = item;
+        }
+    }
+
+    free(buffer);
+    close(fd);
 #endif
 
     Array* res_arr = (Array*)malloc(sizeof(Array));
@@ -870,7 +912,42 @@ Value bsl_fs_recoverFile(int argc, Value* argv, Env** envp) {
     CloseHandle(hDrive);
     return make_num(1.0);
 #else
-    return make_num(0.0);
+    char dev_path[256];
+    if (strncmp(drive_letter, "/dev/", 5) == 0) {
+        snprintf(dev_path, sizeof(dev_path), "%s", drive_letter);
+    } else {
+        snprintf(dev_path, sizeof(dev_path), "/dev/%s", drive_letter);
+    }
+
+    int fd = open(dev_path, O_RDONLY);
+    if (fd < 0) return make_num(0.0);
+
+    off_t offset = (off_t)(sector_offset * 512.0);
+    if (lseek(fd, offset, SEEK_SET) == (off_t)-1) {
+        close(fd);
+        return make_num(0.0);
+    }
+
+    FILE* out = fopen(dest_file, "wb");
+    if (!out) {
+        close(fd);
+        return make_num(0.0);
+    }
+
+    char chunk[4096];
+    double remaining = bytes_to_extract;
+
+    while (remaining > 0) {
+        size_t read_size = (remaining > sizeof(chunk)) ? sizeof(chunk) : (size_t)remaining;
+        ssize_t bytesRead = read(fd, chunk, read_size);
+        if (bytesRead <= 0) break;
+        fwrite(chunk, 1, bytesRead, out);
+        remaining -= bytesRead;
+    }
+
+    fclose(out);
+    close(fd);
+    return make_num(1.0);
 #endif
 }
 
