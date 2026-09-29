@@ -1,0 +1,28 @@
+loadNative("fs.dll", "fs");
+
+var fileSystem = fs();
+
+// 1. Working directories & paths
+var currentDir = fileSystem.cwd();
+print("Working Directory: " + currentDir);
+
+var targetPath = fileSystem.joinPath(currentDir, "sample.txt");
+print("Joined Path: " + targetPath);
+print("Filename: " + fileSystem.baseName(targetPath));
+print("Extension: " + fileSystem.extName(targetPath));
+
+// 2. Writing & checking existence
+fileSystem.writeFile(targetPath, "Hello from BSL FileSystem!", 0);
+
+if (fileSystem.exists(targetPath)) {
+    print("File created successfully!");
+}
+
+// 3. Copy file
+var copyPath = fileSystem.joinPath(currentDir, "sample_copy.txt");
+fileSystem.copyFile(targetPath, copyPath);
+
+// 4. Clean up created files
+//fileSystem.deleteFile(targetPath);
+//fileSystem.deleteFile(copyPath);
+print("Cleaned up temporary files.");
