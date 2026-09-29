@@ -3,16 +3,18 @@
 #include <string.h>
 #include "bsl_v2.h"
 
-// Platform-specific headers for directory traversal, filesystem, & time
 #if defined(_WIN32) || defined(_WIN64)
     #define EXPORT __declspec(dllexport)
     #include <windows.h>
+    #include <winioctl.h>
 #else
     #define EXPORT __attribute__((visibility("default")))
     #include <dirent.h>
     #include <sys/stat.h>
+    #include <sys/statvfs.h>
     #include <time.h>
     #include <unistd.h>
+    #include <fcntl.h>
 #endif
 
 #ifdef __cplusplus
@@ -102,6 +104,38 @@ static char* get_script_dir_from_cmdline(void) {
     return NULL;
 }
 
+// Windows helper: Detect SSD vs HDD via Storage Seek Penalty IOCTL
+#if defined(_WIN32) || defined(_WIN64)
+static const char* detect_drive_media_type(char drive_letter) {
+    char dev_path[10];
+    snprintf(dev_path, sizeof(dev_path), "\\\\.\\%c:", drive_letter);
+
+    HANDLE hDev = CreateFileA(dev_path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (hDev == INVALID_HANDLE_VALUE) {
+        return "Fixed Drive";
+    }
+
+    STORAGE_PROPERTY_QUERY query;
+    memset(&query, 0, sizeof(query));
+    query.PropertyId = StorageDeviceSeekPenaltyProperty;
+    query.QueryType = PropertyStandardQuery;
+
+    DEVICE_SEEK_PENALTY_DESCRIPTOR descriptor;
+    DWORD bytesReturned = 0;
+
+    BOOL result = DeviceIoControl(hDev, IOCTL_STORAGE_QUERY_PROPERTY,
+                                  &query, sizeof(query),
+                                  &descriptor, sizeof(descriptor),
+                                  &bytesReturned, NULL);
+    CloseHandle(hDev);
+
+    if (result && bytesReturned >= sizeof(descriptor)) {
+        return descriptor.IncursSeekPenalty ? "HDD" : "SSD";
+    }
+    return "Fixed Drive";
+}
+#endif
+
 // --- Object Property Helpers ---
 
 void add_native_method(Value* obj, const char* name, Value (*native_ptr)(int, Value*, Env**), int param_count) {
@@ -173,7 +207,6 @@ Value bsl_file_raw(int argc, Value* argv, Env** envp) {
 
 // --- FS Module Methods ---
 
-// 1. openFile(path)
 Value bsl_fs_openFile(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_null();
     
@@ -231,7 +264,6 @@ Value bsl_fs_openFile(int argc, Value* argv, Env** envp) {
     return file_obj;
 }
 
-// 2. scriptDir([optional_path])
 Value bsl_fs_scriptDir(int argc, Value* argv, Env** envp) {
     Env* env = (envp && *envp) ? *envp : NULL;
 
@@ -282,7 +314,6 @@ Value bsl_fs_scriptDir(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup("."));
 }
 
-// 3. list([path])
 Value bsl_fs_list(int argc, Value* argv, Env** envp) {
     const char* target_path = ".";
     if (argc >= 2 && argv[1].type == VAL_STR && argv[1].str != NULL) {
@@ -397,7 +428,6 @@ Value bsl_fs_list(int argc, Value* argv, Env** envp) {
     return make_arr(res_arr);
 }
 
-// 4. exists(path)
 Value bsl_fs_exists(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_num(0.0);
     const char* path = argv[1].str;
@@ -412,7 +442,6 @@ Value bsl_fs_exists(int argc, Value* argv, Env** envp) {
     return make_num(exists ? 1.0 : 0.0);
 }
 
-// 5. writeFile(path, content, [append_flag])
 Value bsl_fs_writeFile(int argc, Value* argv, Env** envp) {
     if (argc < 3 || argv[1].type != VAL_STR || argv[1].str == NULL || argv[2].type != VAL_STR || argv[2].str == NULL) {
         return make_num(0.0);
@@ -435,7 +464,6 @@ Value bsl_fs_writeFile(int argc, Value* argv, Env** envp) {
     return make_num(written == len ? 1.0 : 0.0);
 }
 
-// 6. deleteFile(path)
 Value bsl_fs_deleteFile(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_num(0.0);
     const char* path = argv[1].str;
@@ -449,7 +477,6 @@ Value bsl_fs_deleteFile(int argc, Value* argv, Env** envp) {
 #endif
 }
 
-// 7. copyFile(source, destination)
 Value bsl_fs_copyFile(int argc, Value* argv, Env** envp) {
     if (argc < 3 || argv[1].type != VAL_STR || argv[1].str == NULL || argv[2].type != VAL_STR || argv[2].str == NULL) {
         return make_num(0.0);
@@ -477,7 +504,6 @@ Value bsl_fs_copyFile(int argc, Value* argv, Env** envp) {
 #endif
 }
 
-// 8. moveFile(source, destination)
 Value bsl_fs_moveFile(int argc, Value* argv, Env** envp) {
     if (argc < 3 || argv[1].type != VAL_STR || argv[1].str == NULL || argv[2].type != VAL_STR || argv[2].str == NULL) {
         return make_num(0.0);
@@ -494,7 +520,6 @@ Value bsl_fs_moveFile(int argc, Value* argv, Env** envp) {
 #endif
 }
 
-// 9. makeDir(path)
 Value bsl_fs_makeDir(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_num(0.0);
     const char* path = argv[1].str;
@@ -508,7 +533,6 @@ Value bsl_fs_makeDir(int argc, Value* argv, Env** envp) {
 #endif
 }
 
-// 10. removeDir(path)
 Value bsl_fs_removeDir(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_num(0.0);
     const char* path = argv[1].str;
@@ -522,7 +546,6 @@ Value bsl_fs_removeDir(int argc, Value* argv, Env** envp) {
 #endif
 }
 
-// 11. cwd()
 Value bsl_fs_cwd(int argc, Value* argv, Env** envp) {
     char buf[1024] = {0};
 #if defined(_WIN32) || defined(_WIN64)
@@ -535,7 +558,6 @@ Value bsl_fs_cwd(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup(buf));
 }
 
-// 12. absPath(path)
 Value bsl_fs_absPath(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_str(bsl_strdup("."));
     const char* path = argv[1].str;
@@ -560,7 +582,6 @@ Value bsl_fs_absPath(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup(buf));
 }
 
-// 13. joinPath(part1, part2)
 Value bsl_fs_joinPath(int argc, Value* argv, Env** envp) {
     if (argc < 3 || argv[1].type != VAL_STR || argv[1].str == NULL || argv[2].type != VAL_STR || argv[2].str == NULL) {
         return make_str(bsl_strdup(""));
@@ -586,7 +607,6 @@ Value bsl_fs_joinPath(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup(buf));
 }
 
-// 14. extName(path)
 Value bsl_fs_extName(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_str(bsl_strdup(""));
     const char* path = argv[1].str;
@@ -603,7 +623,6 @@ Value bsl_fs_extName(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup(""));
 }
 
-// 15. baseName(path)
 Value bsl_fs_baseName(int argc, Value* argv, Env** envp) {
     if (argc < 2 || argv[1].type != VAL_STR || argv[1].str == NULL) return make_str(bsl_strdup(""));
     const char* path = argv[1].str;
@@ -619,33 +638,270 @@ Value bsl_fs_baseName(int argc, Value* argv, Env** envp) {
     return make_str(bsl_strdup(path));
 }
 
+// --- NEW FEATURE 1: DISK MANAGER / DRIVES INFO ---
+
+Value bsl_fs_drives(int argc, Value* argv, Env** envp) {
+    int capacity = 8;
+    int count = 0;
+    Value* elements = (Value*)malloc(sizeof(Value) * capacity);
+
+#if defined(_WIN32) || defined(_WIN64)
+    char drive_buffer[512] = {0};
+    DWORD len = GetLogicalDriveStringsA(sizeof(drive_buffer) - 1, drive_buffer);
+
+    if (len > 0 && len <= sizeof(drive_buffer)) {
+        char* drive = drive_buffer;
+        while (*drive) {
+            UINT type = GetDriveTypeA(drive);
+            const char* type_str = "Unknown";
+            const char* media_type = "Unknown";
+
+            switch (type) {
+                case DRIVE_REMOVABLE: type_str = "USB / Removable"; media_type = "Flash Drive"; break;
+                case DRIVE_FIXED:     type_str = "Fixed Disk"; media_type = detect_drive_media_type(drive[0]); break;
+                case DRIVE_REMOTE:    type_str = "Network Drive"; media_type = "Network"; break;
+                case DRIVE_CDROM:     type_str = "CD/DVD ROM"; media_type = "Optical"; break;
+                case DRIVE_RAMDISK:   type_str = "RAM Disk"; media_type = "RAM"; break;
+            }
+
+            char vol_name[MAX_PATH] = {0};
+            char fs_name[MAX_PATH] = {0};
+            GetVolumeInformationA(drive, vol_name, sizeof(vol_name), NULL, NULL, NULL, fs_name, sizeof(fs_name));
+
+            ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
+            double total_size = 0.0;
+            double free_space = 0.0;
+
+            if (GetDiskFreeSpaceExA(drive, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+                total_size = (double)totalBytes.QuadPart;
+                free_space = (double)freeBytesAvailable.QuadPart;
+            }
+
+            Value item = make_obj();
+            add_property(&item, "mountPoint", make_str(bsl_strdup(drive)));
+            add_property(&item, "volumeName", make_str(bsl_strdup(vol_name[0] ? vol_name : "Local Disk")));
+            add_property(&item, "fsType", make_str(bsl_strdup(fs_name[0] ? fs_name : "Unknown")));
+            add_property(&item, "driveType", make_str(bsl_strdup(type_str)));
+            add_property(&item, "mediaType", make_str(bsl_strdup(media_type)));
+            add_property(&item, "totalBytes", make_num(total_size));
+            add_property(&item, "freeBytes", make_num(free_space));
+
+            if (count >= capacity) {
+                capacity *= 2;
+                elements = (Value*)realloc(elements, sizeof(Value) * capacity);
+            }
+            elements[count++] = item;
+
+            drive += strlen(drive) + 1;
+        }
+    }
+#else
+    FILE* fp = setmntent("/proc/mounts", "r");
+    if (fp) {
+        struct mntent* entry;
+        while ((entry = getmntent(fp)) != NULL) {
+            if (strncmp(entry->mnt_fsname, "/dev/", 5) == 0) {
+                struct statvfs stat;
+                double total_size = 0.0;
+                double free_space = 0.0;
+
+                if (statvfs(entry->mnt_dir, &stat) == 0) {
+                    total_size = (double)stat.f_blocks * stat.f_frsize;
+                    free_space = (double)stat.f_bavail * stat.f_frsize;
+                }
+
+                Value item = make_obj();
+                add_property(&item, "mountPoint", make_str(bsl_strdup(entry->mnt_dir)));
+                add_property(&item, "volumeName", make_str(bsl_strdup(entry->mnt_fsname)));
+                add_property(&item, "fsType", make_str(bsl_strdup(entry->mnt_type)));
+                add_property(&item, "driveType", make_str(bsl_strdup("Fixed / Removable")));
+                add_property(&item, "mediaType", make_str(bsl_strdup("Block Device")));
+                add_property(&item, "totalBytes", make_num(total_size));
+                add_property(&item, "freeBytes", make_num(free_space));
+
+                if (count >= capacity) {
+                    capacity *= 2;
+                    elements = (Value*)realloc(elements, sizeof(Value) * capacity);
+                }
+                elements[count++] = item;
+            }
+        }
+        endmntent(fp);
+    }
+#endif
+
+    Array* res_arr = (Array*)malloc(sizeof(Array));
+    res_arr->length = count;
+    res_arr->elements = elements;
+
+    return make_arr(res_arr);
+}
+
+// --- NEW FEATURE 2: DELETED FILE SCANNING (FILE CARVING) ---
+
+Value bsl_fs_scanDeleted(int argc, Value* argv, Env** envp) {
+    if (argc < 3 || argv[1].type != VAL_STR || argv[2].type != VAL_STR) {
+        return make_null();
+    }
+
+    const char* drive_letter = argv[1].str; // e.g. "C" or "D"
+    const char* file_extension = argv[2].str; // e.g. "png", "jpg", "pdf"
+
+    // Default max MB to scan if omitted
+    double scan_limit_mb = 100.0;
+    if (argc >= 4 && argv[3].type == VAL_NUM) {
+        scan_limit_mb = argv[3].num;
+    }
+
+    // Determine Magic Bytes
+    unsigned char sig[8] = {0};
+    size_t sig_len = 0;
+
+    if (strcmp(file_extension, "png") == 0) {
+        sig[0] = 0x89; sig[1] = 0x50; sig[2] = 0x4E; sig[3] = 0x47;
+        sig_len = 4;
+    } else if (strcmp(file_extension, "jpg") == 0 || strcmp(file_extension, "jpeg") == 0) {
+        sig[0] = 0xFF; sig[1] = 0xD8; sig[2] = 0xFF;
+        sig_len = 3;
+    } else if (strcmp(file_extension, "pdf") == 0) {
+        sig[0] = 0x25; sig[1] = 0x50; sig[2] = 0x44; sig[3] = 0x46; // %PDF
+        sig_len = 4;
+    } else {
+        return make_null(); // Unsupported file signature type
+    }
+
+    int capacity = 16;
+    int count = 0;
+    Value* elements = (Value*)malloc(sizeof(Value) * capacity);
+
+#if defined(_WIN32) || defined(_WIN64)
+    char raw_path[32];
+    snprintf(raw_path, sizeof(raw_path), "\\\\.\\%c:", drive_letter[0]);
+
+    HANDLE hDrive = CreateFileA(raw_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (hDrive == INVALID_HANDLE_VALUE) {
+        free(elements);
+        return make_null(); // Requires Administrator Rights!
+    }
+
+    DWORD sector_size = 512;
+    unsigned char* buffer = (unsigned char*)malloc(sector_size);
+    DWORD bytesRead = 0;
+
+    unsigned long long max_sectors = (unsigned long long)((scan_limit_mb * 1024.0 * 1024.0) / sector_size);
+
+    for (unsigned long long sector = 0; sector < max_sectors; sector++) {
+        if (!ReadFile(hDrive, buffer, sector_size, &bytesRead, NULL) || bytesRead == 0) {
+            break;
+        }
+
+        // Compare Magic Bytes signature at sector header
+        if (memcmp(buffer, sig, sig_len) == 0) {
+            Value item = make_obj();
+            unsigned long long byte_offset = sector * sector_size;
+
+            char name_buf[128];
+            snprintf(name_buf, sizeof(name_buf), "Restored_0x%llX.%s", byte_offset, file_extension);
+
+            add_property(&item, "filename", make_str(bsl_strdup(name_buf)));
+            add_property(&item, "sectorOffset", make_num((double)sector));
+            add_property(&item, "byteOffset", make_num((double)byte_offset));
+            add_property(&item, "ext", make_str(bsl_strdup(file_extension)));
+
+            if (count >= capacity) {
+                capacity *= 2;
+                elements = (Value*)realloc(elements, sizeof(Value) * capacity);
+            }
+            elements[count++] = item;
+        }
+    }
+
+    free(buffer);
+    CloseHandle(hDrive);
+#endif
+
+    Array* res_arr = (Array*)malloc(sizeof(Array));
+    res_arr->length = count;
+    res_arr->elements = elements;
+
+    return make_arr(res_arr);
+}
+
+// Extract raw file sectors from drive to destination path
+Value bsl_fs_recoverFile(int argc, Value* argv, Env** envp) {
+    if (argc < 5 || argv[1].type != VAL_STR || argv[2].type != VAL_NUM || argv[3].type != VAL_NUM || argv[4].type != VAL_STR) {
+        return make_num(0.0);
+    }
+
+    const char* drive_letter = argv[1].str;
+    double sector_offset = argv[2].num;
+    double bytes_to_extract = argv[3].num;
+    const char* dest_file = argv[4].str;
+
+#if defined(_WIN32) || defined(_WIN64)
+    char raw_path[32];
+    snprintf(raw_path, sizeof(raw_path), "\\\\.\\%c:", drive_letter[0]);
+
+    HANDLE hDrive = CreateFileA(raw_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (hDrive == INVALID_HANDLE_VALUE) return make_num(0.0);
+
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)(sector_offset * 512.0);
+    SetFilePointerEx(hDrive, li, NULL, FILE_BEGIN);
+
+    FILE* out = fopen(dest_file, "wb");
+    if (!out) {
+        CloseHandle(hDrive);
+        return make_num(0.0);
+    }
+
+    char chunk[4096];
+    double remaining = bytes_to_extract;
+    DWORD bytesRead = 0;
+
+    while (remaining > 0) {
+        DWORD read_size = (remaining > sizeof(chunk)) ? (DWORD)sizeof(chunk) : (DWORD)remaining;
+        if (!ReadFile(hDrive, chunk, read_size, &bytesRead, NULL) || bytesRead == 0) break;
+        fwrite(chunk, 1, bytesRead, out);
+        remaining -= bytesRead;
+    }
+
+    fclose(out);
+    CloseHandle(hDrive);
+    return make_num(1.0);
+#else
+    return make_num(0.0);
+#endif
+}
+
 // --- Module Export ---
 
 EXPORT Value fs(int argc, Value* argv, Env** envp) {
     Value obj = make_obj();
 
-    // Core / Existing Methods
-    add_native_method(&obj, "openFile",   bsl_fs_openFile,   1);
-    add_native_method(&obj, "scriptDir",  bsl_fs_scriptDir,  0);
-    add_native_method(&obj, "list",       bsl_fs_list,       1);
-
-    // File Operations
-    add_native_method(&obj, "exists",     bsl_fs_exists,     1);
-    add_native_method(&obj, "writeFile",  bsl_fs_writeFile,  3);
-    add_native_method(&obj, "deleteFile", bsl_fs_deleteFile, 1);
-    add_native_method(&obj, "copyFile",   bsl_fs_copyFile,   2);
-    add_native_method(&obj, "moveFile",   bsl_fs_moveFile,   2);
-
-    // Directory Operations
-    add_native_method(&obj, "makeDir",    bsl_fs_makeDir,    1);
-    add_native_method(&obj, "removeDir",  bsl_fs_removeDir,  1);
-    add_native_method(&obj, "cwd",        bsl_fs_cwd,        0);
+    // Basic & Directory Operations
+    add_native_method(&obj, "openFile",    bsl_fs_openFile,    1);
+    add_native_method(&obj, "scriptDir",   bsl_fs_scriptDir,   0);
+    add_native_method(&obj, "list",        bsl_fs_list,        1);
+    add_native_method(&obj, "exists",      bsl_fs_exists,      1);
+    add_native_method(&obj, "writeFile",   bsl_fs_writeFile,   3);
+    add_native_method(&obj, "deleteFile",  bsl_fs_deleteFile,  1);
+    add_native_method(&obj, "copyFile",    bsl_fs_copyFile,    2);
+    add_native_method(&obj, "moveFile",    bsl_fs_moveFile,    2);
+    add_native_method(&obj, "makeDir",     bsl_fs_makeDir,     1);
+    add_native_method(&obj, "removeDir",   bsl_fs_removeDir,   1);
+    add_native_method(&obj, "cwd",         bsl_fs_cwd,         0);
 
     // Path Utilities
-    add_native_method(&obj, "absPath",    bsl_fs_absPath,    1);
-    add_native_method(&obj, "joinPath",   bsl_fs_joinPath,   2);
-    add_native_method(&obj, "extName",    bsl_fs_extName,    1);
-    add_native_method(&obj, "baseName",   bsl_fs_baseName,   1);
+    add_native_method(&obj, "absPath",     bsl_fs_absPath,     1);
+    add_native_method(&obj, "joinPath",    bsl_fs_joinPath,    2);
+    add_native_method(&obj, "extName",     bsl_fs_extName,     1);
+    add_native_method(&obj, "baseName",    bsl_fs_baseName,    1);
+
+    // Disk Manager & Recovery Features
+    add_native_method(&obj, "drives",      bsl_fs_drives,      0);
+    add_native_method(&obj, "scanDeleted", bsl_fs_scanDeleted, 3);
+    add_native_method(&obj, "recoverFile", bsl_fs_recoverFile, 4);
 
     return obj;
 }
