@@ -1,0 +1,15 @@
+loadNative("fs.dll", "fs");
+
+var fileSystem = fs();
+
+// Get script execution directory
+var dir = fileSystem.scriptDir();
+print("current path: " + dir);
+
+// Get directory file listing
+var files = fileSystem.list("..\\");
+
+// Iterate through list items
+for (var i = 0; i < files.size; i++) {
+    print("Item: " + files[i].filename + " | Type: " + files[i].type + " | Size: " + files[i].size);
+}

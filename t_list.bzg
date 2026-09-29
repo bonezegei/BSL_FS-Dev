@@ -1,0 +1,12 @@
+loadNative("fs.dll", "fs");
+
+var fileSystem = fs();
+
+var dir = fileSystem.scriptDir();
+print("current path: " + dir);
+
+var files = fileSystem.list(dir);
+
+for (var i = 0; i < files.size; i++) {
+    print("Item: " + files[i].filename + " \t\t| Kind: " + files[i].kind + " \t| Size: " + files[i].fileSize + " bytes");
+}
